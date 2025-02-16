@@ -10,30 +10,81 @@ resources:
 
 variables:
   # Container registry service connection established during pipeline creation
-  dockerRegistryServiceConnection: 'e192d461-843a-4bbb-8c24-xxxxx'
+  dockerRegistryServiceConnection: 'e192d461-843a-4bbb-8c24-b09a40ab3678'
   imageRepository: 'devops'
   containerRegistry: 'azurespringci.azurecr.io'
   dockerfilePath: '$(Build.SourcesDirectory)/Dockerfile'
   tag: '$(Build.BuildId)'
-
+  SONAR_HOST_URL: 'http://40.76.249.199:9000'
+  ACR_NAME: 'azurespringci.azurecr.io'
+  BUILD_VERSION: '$(Build.BuildId)'
+  SONAR_TOKEN: 'sqa_2ac25b2741c599d954b65c73e457d40dc1584755'
   # Agent VM image name
   vmImageName: 'ubuntu-latest'
 
-stages:
-- stage: Build
-  displayName: Build and push stage
-  jobs:
-  - job: Build
-    displayName: Build
-    pool:
-      vmImage: $(vmImageName)
-    steps:
-    - task: Docker@2
-      displayName: Build and push an image to container registry
-      inputs:
-        command: buildAndPush
-        repository: $(imageRepository)
-        dockerfile: $(dockerfilePath)
-        containerRegistry: $(dockerRegistryServiceConnection)
-        tags: |
-          $(tag)
+steps:
+  - checkout: self
+
+  - task: JavaToolInstaller@0
+    inputs:
+      versionSpec: '21'
+      jdkSourceOption: PreInstalled
+      jdkArchitectureOption: x64
+
+  - script: |
+      sudo apt-get update
+      sudo apt-get install -y unzip
+      curl -o sonar-scanner-cli.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-4.6.2.2472-linux.zip
+      unzip sonar-scanner-cli.zip
+      sudo mv sonar-scanner-4.6.2.2472-linux /opt/sonar-scanner
+      export PATH=$PATH:/opt/sonar-scanner/bin
+    displayName: 'Install SonarQube Scanner'
+
+  - script: |
+      export PROJECT_KEY=$(mvn help:evaluate -Dexpression=project.artifactId -q -DforceStdout)
+      echo "Project Key: $PROJECT_KEY"
+      mvn clean package -DskipTests
+      ARTIFACT_ID=$(mvn help:evaluate -Dexpression=project.artifactId -q -DforceStdout)
+      echo "sonar.projectKey=$PROJECT_KEY" > sonar-project.properties
+      echo "sonar.projectName=$PROJECT_KEY $(Build.BuildId)" >> sonar-project.properties
+      echo "sonar.projectVersion=$(Build.BuildId)" >> sonar-project.properties
+      echo "sonar.sources=src" >> sonar-project.properties
+      echo "sonar.host.url=$(SONAR_HOST_URL)" >> sonar-project.properties
+      echo "sonar.login=$(SONAR_TOKEN)" >> sonar-project.properties
+      echo "sonar.sourceEncoding=UTF-8" >> sonar-project.properties
+      echo "sonar.java.binaries=./target/classes" >> sonar-project.properties
+    displayName: 'Generate SonarQube Properties File'
+
+  - script: |
+      /opt/sonar-scanner/bin/sonar-scanner -Dproject.settings=sonar-project.properties
+    displayName: 'Run SonarQube Scan'
+
+  - script: |
+      export PROJECT_KEY=$(mvn help:evaluate -Dexpression=project.artifactId -q -DforceStdout)
+      echo "PROJECT_KEY=$PROJECT_KEY"
+      SONAR_STATUS_URL="$SONAR_HOST_URL/api/qualitygates/project_status?projectKey=$PROJECT_KEY"
+      echo "SONAR_STATUS_URL=$SONAR_STATUS_URL"
+      STATUS=`curl -s -u ${SONAR_TOKEN}: $SONAR_HOST_URL/api/qualitygates/project_status?projectKey=${PROJECT_KEY}| jq -r '.projectStatus.status'`
+      echo "Quality Gate Status: $STATUS"
+
+      if [ "$STATUS" != "OK" ]; then
+        echo "##vso[task.logissue type=error]Quality Gate failed!"
+        exit 1
+      fi
+    displayName: 'Validate SonarQube Quality Gate'
+
+  - task: Docker@2
+    displayName: 'Login to ACR'
+    inputs:
+      command: login
+      containerRegistry: $(dockerRegistryServiceConnection)
+
+  - task: Docker@2
+    displayName: 'Build & Push Docker Image'
+    inputs:
+      command: buildAndPush
+      repository: $(imageRepository)
+      dockerfile: $(dockerfilePath)
+      containerRegistry: $(dockerRegistryServiceConnection)
+      tags: |
+        $(tag)
