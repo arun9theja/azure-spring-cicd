@@ -1,1 +1,19 @@
-deployment.yml
+apiVersion : apps/v1
+kind: Deployment
+metadata:
+  name: devops 
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: devops
+  template:
+    metadata:
+      labels:
+        app: devops 
+    spec:
+      containers:
+        - name: devops 
+          image: azurespringci.azurecr.io/devops
+          ports:
+          - containerPort: 8080
