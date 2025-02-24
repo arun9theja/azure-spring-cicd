@@ -6,43 +6,41 @@ resources:
 
 variables:
   ACR_NAME: 'azurespringci.azurecr.io'
-  dockerRegistryServiceConnection: 'azurespringci'
+  ACR_CONNECTION: 'azurespringci'
   IMAGE_NAME: 'devops'
   IMAGE_TAG: '$(Build.BuildId)'
   KUBE_NAMESPACE: 'default'
   AKS_RESOURCE_GROUP: 'myResourceGroup'
   AKS_CLUSTER_NAME: 'argo-aks'
   HELM_RELEASE_NAME: 'devops-app'
-  imageRepository: 'devops'
-  containerRegistry: 'azurespringci.azurecr.io'
-  dockerfilePath: '**/Dockerfile'
-  imagePullSecret: 'azure-auth'
+  DOCKERFILE_PATH: '**/Dockerfile'
+  IMAGE_PULL_SECRET: 'azure-auth'
+  K8S_SERVICE_CONNECTION: 'myspringboot'
 
 stages:
   - stage: Build
-    displayName: Build stage
+    displayName: 🔨 Build and Push Docker Image
     jobs:
-    - job: Build
-      displayName: Build
-      pool:
-        vmImage: ubuntu-latest
-      steps:
-      - task: Docker@2
-        displayName: Build and push an image to container registry
-        inputs:
-          command: buildAndPush
-          repository: $(imageRepository)
-          dockerfile: $(dockerfilePath)
-          containerRegistry: $(dockerRegistryServiceConnection)
-          tags: |
-            $(IMAGE_TAG)
-
-      - upload: manifests
-        artifact: manifests
+      - job: BuildAndPush
+        displayName: 🚀 Build and Push Image
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - task: Docker@2
+            displayName: 🏗️ Build & Push Docker Image
+            inputs:
+              command: buildAndPush
+              repository: $(IMAGE_NAME)
+              dockerfile: $(DOCKERFILE_PATH)
+              containerRegistry: $(ACR_CONNECTION)
+              tags: |
+                $(IMAGE_TAG)
 
   - stage: Deploy
+    displayName: 🚀 Deploy to AKS
     jobs:
       - job: DeployToAKS
+        displayName: 🏗️ Deploy Helm Chart
         pool:
           vmImage: 'ubuntu-latest'
 
@@ -50,24 +48,23 @@ stages:
           - checkout: self
 
           - task: HelmInstaller@1
-            displayName: 'Install Helm'
+            displayName: 📥 Install Helm
             inputs:
               helmVersion: 'latest'
 
           - task: KubernetesManifest@0
-            displayName: Create imagePullSecret
+            displayName: 🔑 Create ImagePullSecret
             inputs:
               action: createSecret
-              secretName: $(imagePullSecret)
-              dockerRegistryEndpoint: $(dockerRegistryServiceConnection)
-              kubernetesServiceConnection: 'myspringboot'
+              secretName: $(IMAGE_PULL_SECRET)
+              dockerRegistryEndpoint: $(ACR_CONNECTION)
+              kubernetesServiceConnection: $(K8S_SERVICE_CONNECTION)
 
           - task: HelmDeploy@0
-            displayName: 'Deploy to AKS with Helm'
+            displayName: 🚀 Deploy Helm Chart to AKS
             inputs:
               connectionType: 'Kubernetes Service Connection'
-              kubernetesServiceConnection: 'myspringboot'
-              dockerRegistryEndpoint: $(dockerRegistryServiceConnection)
+              kubernetesServiceConnection: $(K8S_SERVICE_CONNECTION)
               namespace: $(KUBE_NAMESPACE)
               command: 'upgrade'
               chartType: 'FilePath'
@@ -76,5 +73,12 @@ stages:
               overrideValues: |
                 image.repository=$(ACR_NAME)/$(IMAGE_NAME)
                 image.tag=$(IMAGE_TAG)
-                imagePullSecrets[0].name=$(imagePullSecret)
+                imagePullSecrets[0].name=$(IMAGE_PULL_SECRET)
               install: true
+            name: helmDeploy
+
+          - script: |
+              echo "🚨 Deployment failed! Rolling back to the last stable release..."
+              helm rollback $(HELM_RELEASE_NAME) --namespace $(KUBE_NAMESPACE)
+            displayName: 🔄 Rollback on Failure
+            condition: failed()
