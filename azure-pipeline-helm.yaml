@@ -1,0 +1,80 @@
+trigger:
+  - develop
+
+resources:
+  - repo: self
+
+variables:
+  ACR_NAME: 'azurespringci.azurecr.io'
+  dockerRegistryServiceConnection: 'azurespringci'
+  IMAGE_NAME: 'devops'
+  IMAGE_TAG: '$(Build.BuildId)'
+  KUBE_NAMESPACE: 'default'
+  AKS_RESOURCE_GROUP: 'myResourceGroup'
+  AKS_CLUSTER_NAME: 'argo-aks'
+  HELM_RELEASE_NAME: 'devops-app'
+  imageRepository: 'devops'
+  containerRegistry: 'azurespringci.azurecr.io'
+  dockerfilePath: '**/Dockerfile'
+  imagePullSecret: 'azure-auth'
+
+stages:
+  - stage: Build
+    displayName: Build stage
+    jobs:
+    - job: Build
+      displayName: Build
+      pool:
+        vmImage: ubuntu-latest
+      steps:
+      - task: Docker@2
+        displayName: Build and push an image to container registry
+        inputs:
+          command: buildAndPush
+          repository: $(imageRepository)
+          dockerfile: $(dockerfilePath)
+          containerRegistry: $(dockerRegistryServiceConnection)
+          tags: |
+            $(IMAGE_TAG)
+
+      - upload: manifests
+        artifact: manifests
+
+  - stage: Deploy
+    jobs:
+      - job: DeployToAKS
+        pool:
+          vmImage: 'ubuntu-latest'
+
+        steps:
+          - checkout: self
+
+          - task: HelmInstaller@1
+            displayName: 'Install Helm'
+            inputs:
+              helmVersion: 'latest'
+
+          - task: KubernetesManifest@0
+            displayName: Create imagePullSecret
+            inputs:
+              action: createSecret
+              secretName: $(imagePullSecret)
+              dockerRegistryEndpoint: $(dockerRegistryServiceConnection)
+              kubernetesServiceConnection: 'myspringboot'
+
+          - task: HelmDeploy@0
+            displayName: 'Deploy to AKS with Helm'
+            inputs:
+              connectionType: 'Kubernetes Service Connection'
+              kubernetesServiceConnection: 'myspringboot'
+              dockerRegistryEndpoint: $(dockerRegistryServiceConnection)
+              namespace: $(KUBE_NAMESPACE)
+              command: 'upgrade'
+              chartType: 'FilePath'
+              chartPath: 'helm/devops-chart'
+              releaseName: $(HELM_RELEASE_NAME)
+              overrideValues: |
+                image.repository=$(ACR_NAME)/$(IMAGE_NAME)
+                image.tag=$(IMAGE_TAG)
+                imagePullSecrets[0].name=$(imagePullSecret)
+              install: true
